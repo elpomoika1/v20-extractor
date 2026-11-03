@@ -30,3 +30,5 @@ The program launches a suspended Chrome process, attaches as a debugger, locates
 
 - x86 support
 - add msedge support
+
+## License -> MIT
