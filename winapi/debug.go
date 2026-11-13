@@ -1,9 +1,8 @@
 //go:build windows
 
-package main
+package winapi
 
 import (
-	"deub/types"
 	"errors"
 	"fmt"
 	"unsafe"
@@ -87,9 +86,9 @@ func ResumeThread(hThread windows.Handle) (uint32, error) {
 	return ret, nil
 }
 
-func GetThreadContext(hThread windows.Handle, lpContext *types.AMD64CONTEXT) (bool, error) {
+func GetThreadContext(hThread windows.Handle, lpContext *AMD64CONTEXT) (bool, error) {
 	buf := make([]byte, unsafe.Sizeof(*lpContext)+15)
-	ctx := (*types.AMD64CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
+	ctx := (*AMD64CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
 	ctx.ContextFlags = lpContext.ContextFlags
 
 	r1, _, err := getThreadContext.Call(uintptr(hThread), uintptr(unsafe.Pointer(ctx)))
@@ -105,9 +104,9 @@ func GetThreadContext(hThread windows.Handle, lpContext *types.AMD64CONTEXT) (bo
 	return true, nil
 }
 
-func SetThreadContext(hThread windows.Handle, lpContext *types.AMD64CONTEXT) (bool, error) {
+func SetThreadContext(hThread windows.Handle, lpContext *AMD64CONTEXT) (bool, error) {
 	buf := make([]byte, unsafe.Sizeof(*lpContext)+15)
-	ctx := (*types.AMD64CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
+	ctx := (*AMD64CONTEXT)(unsafe.Pointer((uintptr(unsafe.Pointer(&buf[15]))) &^ 15))
 	*ctx = *lpContext
 
 	r1, _, err := setThreadContext.Call(uintptr(hThread), uintptr(unsafe.Pointer(ctx)))
@@ -131,7 +130,7 @@ func ContinueDebugEvent(pid, tid, continueStatus uint32) (bool, error) {
 	return true, nil
 }
 
-func WaitForDebugEvent(debugLevel *types.DEBUG_EVENT, dwMillis uint32) (bool, error) {
+func WaitForDebugEvent(debugLevel *DEBUG_EVENT, dwMillis uint32) (bool, error) {
 	r1, _, err := waitForDebug.Call(uintptr(unsafe.Pointer(debugLevel)), uintptr(dwMillis))
 	if r1 == 0 {
 		return false, err

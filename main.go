@@ -20,7 +20,7 @@ import (
 	"unsafe"
 
 	"deub/process"
-	"deub/types"
+	"deub/winapi"
 
 	"golang.org/x/sys/windows"
 )
@@ -119,9 +119,9 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 	)
 
 	fBp := true
-	var debugEvent types.DEBUG_EVENT
+	var debugEvent winapi.DEBUG_EVENT
 	for {
-		ok, err := WaitForDebugEvent(&debugEvent, 9000)
+		ok, err := winapi.WaitForDebugEvent(&debugEvent, 9000)
 		if err != nil {
 			return err
 		}
@@ -133,7 +133,7 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 
 		switch debugEvent.DwDebugEventCode {
 		case CREATE_THREAD_DEBUG_EVENT: // will start handle new threads if appears
-			info := (*types.CREATE_THREAD_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
+			info := (*winapi.CREATE_THREAD_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
 
 			if leaAddr != 0 && info.HThread != 0 {
 				if _, err := setHwbpOnThread(info.HThread, uint64(leaAddr), false); err != nil {
@@ -141,7 +141,7 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 				}
 			}
 		case LOAD_DLL_DEBUG_EVENT:
-			info := (*types.LOAD_DLL_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
+			info := (*winapi.LOAD_DLL_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
 
 			if info.HFile != 0 {
 				name, err := getFinalPathNameByHandle(info.HFile)
@@ -178,7 +178,7 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 				}
 			}
 		case EXCEPTION_DEBUG_EVENT:
-			info := (*types.EXCEPTION_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
+			info := (*winapi.EXCEPTION_DEBUG_INFO)(unsafe.Pointer(&debugEvent.U[0]))
 
 			switch info.ExeptionRecord.ExceptionCode {
 			case uint32(windows.STATUS_BREAKPOINT): // EXCEPTION_BREAKPOINT
@@ -221,16 +221,16 @@ func startDebug(pi *windows.ProcessInformation, isEdge bool) error {
 				continueStatus = 0x80010001
 			}
 		}
-		if _, err := ContinueDebugEvent(debugEvent.DwProcessId, debugEvent.DwThreadId, continueStatus); err != nil {
+		if _, err := winapi.ContinueDebugEvent(debugEvent.DwProcessId, debugEvent.DwThreadId, continueStatus); err != nil {
 			return fmt.Errorf("ContinueDebugEvent failed: %w, %w", err, windows.GetLastError())
 		}
 	}
 }
 
 func dumpAbeKeyFromCtx(hProcess, hThread windows.Handle, isEdge bool) ([]byte, error) {
-	var context types.AMD64CONTEXT
+	var context winapi.AMD64CONTEXT
 	context.ContextFlags = 0x1000007
-	ret, err := GetThreadContext(hThread, &context)
+	ret, err := winapi.GetThreadContext(hThread, &context)
 	if err != nil && !ret {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func setHwbpOnAllThreads(hProcess windows.Handle, bpAddr uint64, clear bool) err
 	var hPrevThread windows.Handle = 0 // nullptr
 
 	for {
-		newThread, err := NtGetNextThread(hProcess, hPrevThread)
+		newThread, err := winapi.NtGetNextThread(hProcess, hPrevThread)
 		if err != nil {
 			return fmt.Errorf("enumerate threads: %w", err)
 		}
@@ -304,17 +304,17 @@ func setHwbpOnAllThreads(hProcess windows.Handle, bpAddr uint64, clear bool) err
 
 func setHwbpOnThread(hThread windows.Handle, bpAddr uint64, clear bool) (bool, error) {
 	var res bool
-	var context types.AMD64CONTEXT
+	var context winapi.AMD64CONTEXT
 	context.ContextFlags = 0x1000010
 
-	_, err := SuspendThread(hThread)
+	_, err := winapi.SuspendThread(hThread)
 	if err != nil {
 		return false, err
 	}
 
-	defer ResumeThread(hThread)
+	defer winapi.ResumeThread(hThread)
 
-	ret, err := GetThreadContext(hThread, &context)
+	ret, err := winapi.GetThreadContext(hThread, &context)
 
 	if ret && err == nil {
 		context.Dr6 = 0
@@ -326,7 +326,7 @@ func setHwbpOnThread(hThread windows.Handle, bpAddr uint64, clear bool) (bool, e
 			context.Dr7 = 1
 		}
 
-		res, err = SetThreadContext(hThread, &context)
+		res, err = winapi.SetThreadContext(hThread, &context)
 		if err != nil {
 			return res, err
 		}

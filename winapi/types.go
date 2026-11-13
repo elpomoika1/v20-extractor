@@ -1,6 +1,6 @@
 //go:build windows
 
-package types
+package winapi
 
 import "golang.org/x/sys/windows"
 
