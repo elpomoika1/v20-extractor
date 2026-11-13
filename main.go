@@ -19,6 +19,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"deub/process"
 	"deub/types"
 
 	"golang.org/x/sys/windows"
@@ -34,6 +35,7 @@ const (
 var (
 	programFiles    = os.Getenv("ProgramFiles")
 	programFilesX86 = os.Getenv("ProgramFiles(x86)")
+	procs           = []string{"msedge.exe", "chrome.exe"}
 
 	chromeExe = filepath.Join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
 	msedgeExe = filepath.Join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe")
@@ -49,6 +51,12 @@ type SectionInfo struct {
 }
 
 func main() {
+	err := process.TerminateBrowsers(procs)
+	if err != nil {
+		fmt.Println("failed to termiante browsers process")
+		return
+	}
+
 	for _, exeFile := range browsers {
 		appName, err := windows.UTF16PtrFromString(exeFile)
 		if err != nil {
